@@ -1,0 +1,28 @@
+version: '3.7'
+
+volumes:
+  database:
+
+services:
+
+  database:
+    image: postgres:11
+    volumes:
+      - ./datastream/postgres_initdb:/docker-entrypoint-initdb.d
+      - database:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: A22469000YABUTDONTREALLYUSETHISPASSWORD
+      POSTGRES_USER: datastreamuser
+      POSTGRES_DB: datastream
+
+  python:
+    build: datastream/.
+    volumes:
+      - ./:/usr/src/app
+    environment:
+      POSTGRES_PASSWORD: A22469000YABUTDONTREALLYUSETHISPASSWORD
+      POSTGRES_USER: datastreamuser
+      POSTGRES_DB: datastream
+      POSTGRES_HOST: database
+    stdin_open: true
+    tty: true
