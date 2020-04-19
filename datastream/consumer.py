@@ -312,13 +312,19 @@ class Consumer:
     of this consumer.
 
     Parameters:
+
         topic (str): Topic to read from.
+
         consumer_group_name (str): Consumer group to track processing records
+
         max_poll_records (int): Number of records to fetch per poll.
+
         max_poll_interval_ms (int): Number of ms to wait between each fetch
             for more records.
+
         enable_auto_commit (bool): Autocommit after every 
             auto_commit_interval_size records you yield from iter(consumer).
+
         auto_commit_interval_size (int): Number of records to yield before
             doing a commit of the records. 
 
@@ -328,6 +334,7 @@ class Consumer:
 
             If auto_commit_interval_size > max_poll_records then it will
             iterate until max_poll_records or no more records found. 
+
         connection (psycopg2.extensions.connection): storage backend. This
             connection is used per process/thread. To make process/thread safe
             all consumers in a single process/thread should share a single
