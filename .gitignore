@@ -1,0 +1,5 @@
+# Project
+untracked_*
+
+# python
+__pycache__
