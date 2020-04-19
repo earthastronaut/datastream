@@ -11,29 +11,25 @@ from datastream import database
 from datastream.database import cursor_type, connection_type
 
 
-__all__ = [
-    'Consumer'
-]
+__all__ = ['Consumer']
 
 
-# logging.basicConfig(level='DEBUG')
-# logging.getLogger('ipython').setLevel('CRITICAL')
 logger = logging.getLogger(__name__)
 
 
-def execute_poll_records(
-    cursor: cursor_type,
-    consumer_group_name: str,
-    topic: str,
-    max_records: int = 10,
-    job_started_at__ge: datetime = None,
-) -> List[Dict]:
-    """ Get records to process without commit to job """
-    if job_started_at__ge is None:
-        comment_out_job_start_filter = '--'
-    else:
-        comment_out_job_start_filter = ''
+# ############################################################################ #
+# Fetch and Schedule Consumer Jobs
+# ############################################################################ #
 
+def execute_fetch_records(
+    cursor: cursor_type,
+    record_ids: List[int],
+) -> List[Dict]:
+    """ Get records to process without commit to job. """
+    if not len(record_ids):
+        return []
+
+    record_ids_in = ', '.join(map(str, map(int, record_ids)))
     sql = f"""
     SELECT
         r.record_id
@@ -42,108 +38,64 @@ def execute_poll_records(
         , r.timestamp
         , r.metadata
         , r.data
-        , cj.job_started_at
-    FROM
-        datastream.record r
-        LEFT JOIN datastream.consumer_job cj ON
-            r.record_id = cj.record_id
-            AND consumer_group_name = %(consumer_group_name)s
-    WHERE
-        r.topic = %(topic)s
-        AND (
-            cj.record_id IS NULL
-            OR (
-                -- record exists but is old and uncompleted
-                cj.job_completed_at IS NULL
-                {comment_out_job_start_filter} AND cj.job_started_at >= %(job_started_at__ge)s
-            )
-        )
-    LIMIT %(max_records)s
+    FROM datastream.record r
+    WHERE r.record_id IN ({record_ids_in})
     """
-    params = {
-        'consumer_group_name': consumer_group_name,
-        'topic': topic,
-        'max_records': int(max_records),
-        'job_started_at__ge': job_started_at__ge,
-    }
+    logger.debug(sql)
 
-    if logger.level <= logging.DEBUG:
-        # don't mogrify unless needed to log
-        logger.debug(cursor.mogrify(sql, params).decode('utf-8'))
-
-    cursor.execute(sql, params)
-    rows = cursor.fetchall()
-    columns = cursor.description
-
-    logger.info(f'Get {len(rows)} records consumer_group_name="{consumer_group_name}" topic="{topic}"')  # noqa
-
-    column_names = [c.name for c in columns]
-    return tuple(
+    cursor.execute(sql)
+    column_names = [c.name for c in cursor.description]
+    rows = [
         dict(zip(column_names, row))
-        for row in rows
-    )
+        for row in cursor.fetchall()
+    ]
+
+    logger.info(f'Fetched {len(rows)} records')
+    return rows
 
 
-def execute_update_consumer_job(
+def execute_create_consumer_jobs(
     cursor: cursor_type,
+    topic: str,
     consumer_group_name: str,
-    update_record_ids: List[int],
-    job_start_time: datetime,
+    max_records: int = 100,
+    job_start_time: datetime = None,
 ) -> List[int]:
-    """ Update data records with job_start_time without commit """
-    record_ids_in = ', '.join(map(str, map(int, update_record_ids)))
+    """ Create consumer start jobs without commit. """
     sql = f"""
-    UPDATE datastream.consumer_job
-    SET
-        job_started_at = %(job_start_time)s
-    WHERE
-        consumer_group_name = %(consumer_group_name)s
-        AND record_id IN ({record_ids_in})
+    INSERT INTO datastream.consumer_job
+    (consumer_group_name, record_id, job_started_at)
+    (
+        SELECT
+            %(consumer_group_name)s
+            , r.record_id
+            , %(job_start_time)s
+        FROM
+            datastream.record r
+            LEFT JOIN datastream.consumer_job cj ON
+                r.record_id = cj.record_id
+                AND consumer_group_name = %(consumer_group_name)s
+        WHERE
+            r.topic = %(topic)s
+            AND cj.record_id IS NULL
+        LIMIT %(max_records)s
+    )
     RETURNING record_id
     """
     params = {
         'consumer_group_name': consumer_group_name,
         'job_start_time': job_start_time,
+        'topic': topic,
+        'max_records': max_records,
     }
-
-    if logger.level <= logging.DEBUG:
-        # don't mogrify unless needed to log
-        logger.debug(cursor.mogrify(sql, params).decode('utf-8'))
+    logger.debug(cursor.mogrify(sql, params).decode('utf-8'))
 
     cursor.execute(sql, params)
-    rows_update_consumer_job = cursor.fetchall()
+    rows = cursor.fetchall()
 
-    updated_record_ids = list((r[0] for r in rows_update_consumer_job))
-    logger.info(f'Updated {len(updated_record_ids)} consumer jobs for consumer_group_name="{consumer_group_name}" ')  # noqa
-    return updated_record_ids
+    logger.info(f'Created {len(rows)} consumer job rows')
 
-
-def execute_create_consumer_jobs(
-    cursor: cursor_type,
-    consumer_group_name: str,
-    create_record_ids: List[int],
-    job_start_time: datetime,
-) -> List[int]:
-    """ Create consumer start jobs without commit """
-    sql = f"""
-    INSERT INTO datastream.consumer_job
-    (consumer_group_name, record_id, job_started_at)
-    VALUES (%(consumer_group_name)s, %(record_id)s, %(job_start_time)s)
-    """
-    params = {
-        'consumer_group_name': consumer_group_name,
-        'job_start_time': job_start_time,
-    }
-
-    for record_id in create_record_ids:
-        params['record_id'] = record_id
-        if logger.level <= logging.DEBUG:
-            # don't mogrify unless needed to log
-            logger.debug(cursor.mogrify(sql, params).decode('utf-8'))
-        cursor.execute(sql, params)
-
-    logger.info(f'Created {len(create_record_ids)} consumer job rows')
-    return create_record_ids
+    return [r[0] for r in rows]
 
 
 def poll_records(
@@ -151,11 +103,10 @@ def poll_records(
     consumer_group_name: str,
     topic: str,
     max_records: int = 100,
+    lock_timeout_s: int = 5,
     job_start_time: datetime = None,
-    job_started_at__ge: datetime = None,
-
 ) -> List[Dict]:
-    """ Get records to process
+    """ Get records to process.
 
     Gets multiple records to process per topic (and partition, Not Implemented).
     To be thread safe, this needs to serialize getting records and marking them 
@@ -169,23 +120,23 @@ def poll_records(
     from the user by creating consumer ids and assigning them to partitions
     as long as the developer doesn't create more consumers than partitions. 
     In this implementation, scheduling of parallel consumers is handled by
-    marking tasks in progress with job_started_at timestamp. So the abstraction
-    to parallelize (topic, consumer group) is handled by the serialization 
-    within postgres and you may scale infinite parallel consumers. Though
-    there is a performance hit by using postgres's serialized transaction.
+    marking tasks in progress with job_started_at timestamp. So the scheduling
+    of concurrent consumers per (topic, consumer group) is handled by a 
+    global lock on the table. 
 
     Parameters:
         connection (psycopg2.extensions.connection): storage backend
         consumer_group_name (str): Name of consumer group
         topic (str): Topic for records
         max_records (int): Number of records to poll
+        lock_timeout_s (int): Number of seconds before table lock timeout.
         job_start_time (datetime): used when marking jobs in progress.
             defaults to datetime.utcnow()
-        job_started_at__ge (datetime): used when updating stale jobs. Default
-            will not filter on this field. Note: job_started_at__ge. This is 
-            only used for stale jobs which started and crashed without marking 
-            complete. Use with caution because this can cause multiple jobs to 
-            start on records. Another solution is to delete the job rows.
+
+            Note: if a job crashes, then this sort of lock will be left on 
+            the job and the record will not be processed. When this happens 
+            you will need to delete all non-completed.
+
             ```
             DELETE FROM datastream.consumer_job
             WHERE
@@ -199,67 +150,83 @@ def poll_records(
         (List[Dict]): list of the records
 
     """
+    lock_timeout_s = max(int(lock_timeout_s), 1)
     job_start_time = job_start_time or datetime.utcnow()
 
     with connection:
-        try:
-            cursor = connection.cursor()
-            cursor.execute('BEGIN')
+        with connection.cursor() as cursor:
             cursor.execute('LOCK TABLE datastream.consumer_job IN ACCESS EXCLUSIVE MODE')  # noqa
-            # cursor.ACCESS EXCLUSIVE
-            # cursor.execute("SET lock_timeout TO '4s'")
-            records = execute_poll_records(
+            cursor.execute(f"SET LOCAL lock_timeout = '{lock_timeout_s}s'")
+            record_ids = execute_create_consumer_jobs(
                 cursor=cursor,
-                consumer_group_name=consumer_group_name,
                 topic=topic,
+                consumer_group_name=consumer_group_name,
                 max_records=max_records,
-                job_started_at__ge=job_started_at__ge,
+                job_start_time=job_start_time
             )
 
-            # record ids
-            record_ids = set((r['record_id'] for r in records))
-            record_ids_failed_jobs = set((
-                r['record_id']
-                for r in records
-                if r['job_started_at'] is not None
-            ))
-            record_ids_unprocessed = (record_ids - record_ids_failed_jobs)
-            logger.info(f'Records {record_ids}')
+    with connection:
+        with connection.cursor() as cursor:
+            records = execute_fetch_records(
+                cursor=cursor,
+                record_ids=record_ids,
+            )
 
-            if len(record_ids_failed_jobs):
-                updated_record_ids = execute_update_consumer_job(
-                    cursor=cursor,
-                    consumer_group_name=consumer_group_name,
-                    update_record_ids=record_ids_failed_jobs,
-                    job_start_time=job_start_time,
-                )
-
-            if len(record_ids_unprocessed):
-                execute_create_consumer_jobs(
-                    cursor=cursor,
-                    consumer_group_name=consumer_group_name,
-                    create_record_ids=record_ids_unprocessed,
-                    job_start_time=job_start_time,
-                )
-
-            cursor.execute('COMMIT')
-        except:
-            cursor.execute('ROLLBACK')
-            raise
     return records
 
-# records = poll_records(
-#     consumer_group_name='etl_users',
-#     topic='testing',
-#     max_records=10,
-#     job_started_at__ge=None,
-#     job_start_time=None,
-# )
-# if len(records):
-#     record = records[-1]
-#     # data = record[-1]
-#     value_bytes = record['data']
-#     value_py = json.loads(value_bytes.tobytes().decode('utf-8'))
+
+# ############################################################################ #
+# Poll for In-Progress Jobs
+# ############################################################################ #
+
+# Note:
+#   These utilities are used for seeing what jobs have job_start_at but no
+#   complete time. Especially useful for recovery from crashes. This record
+#   list can be used to delete the job ids.
+
+def poll_consumer_job_in_progress(
+    connection: connection_type,
+    topic: str,
+    consumer_group_name: str,
+) -> List[Dict]:
+    """ Poll for in progress jobs """
+    sql = f"""
+    SELECT 
+        r.record_id
+        , r.topic
+        , r.key
+        , r.timestamp
+        , consumer_group_name
+        , consumer_job_id
+        , job_started_at
+    FROM 
+        datastream.consumer_job cj
+        JOIN datastream.record r ON r.record_id = cj.record_id
+    WHERE
+        r.topic = %(topic)s
+        AND cj.consumer_group_name = %(consumer_group_name)s
+        AND cj.job_completed_at IS NULL
+    """
+    params = {
+        'topic': topic,
+        'consumer_group_name': consumer_group_name,
+    }
+    logger.debug(cursor.mogrify(sql, params).decode('utf-8'))
+
+    cursor.execute(sql, params)
+    column_names = [c.name for c in cursor.description]
+    rows = [
+        dict(zip(column_names, row))
+        for row in cursor.fetchall()
+    ]
+
+    logger.info(f'Created {len(rows)} consumer job rows')
+    return rows
+
+
+# ############################################################################ #
+# Mark Jobs Complete
+# ############################################################################ #
 
 
 def execute_commit_records(
@@ -329,8 +296,20 @@ def commit_records(
             )
 
 
+# ############################################################################ #
+# Consumer Class
+# ############################################################################ #
+
+
 class Consumer:
     """ Consumer for processing messages from the data stream
+
+    See consumer.poll_records(...) for more details about how polling works.
+
+    You can create multiple consumers and each will act as a thread/process
+    safe consumer. Each consumer should process messages in serial. Give note
+    to the connection argument and handle your database connections outside
+    of this consumer.
 
     Parameters:
         topic (str): Topic to read from.
@@ -477,16 +456,8 @@ class Consumer:
         return self
 
     def __exit__(self, exception_type, exception, traceback):
-        self.commit_records()
-
-
-if __name__ == '__main__':
-    consumer = Consumer(
-        topic='testing',
-        consumer_group_name='my_consumer_2',
-        max_poll_records=8,
-    )
-
-    with consumer:
-        for record in consumer:
-            print('Processing!', record['record_id'], record['data'])
+        if exception is None:
+            self.commit_records()
+        else:
+            self.commit_records(record_ids=self._yielded_record_ids[:-1])
+            self._yielded_record_ids = []
