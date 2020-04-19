@@ -68,7 +68,6 @@ def send_record(
     topic (and partition--Not Implemented). Postgres is handling the
     serialization of that record index.
 
-
     Parameters:
         connection (psycopg2.extensions.connection): storage backend.
         producer_name (str): An identifier for the producer of the message.
@@ -96,7 +95,26 @@ def send_record(
 
 
 class Producer:
-    """ Producer for sending messages to the data stream
+    """ Producer for sending messages to the data stream.
+
+    Adds records to data stream topic. Doesn't do any checks before inserting.
+
+    Parameters:
+        producer_name (str): An identifier for the producer of the message.
+        connection (psycopg2.extensions.connection): storage backend.        
+
+    Usage:
+
+        Send a message with default serializer.
+
+        ```
+        producer.send(
+            topic='rabbit',
+            key='turtle123',
+            metadata={},
+            data={'hello': 'world'},
+        )    
+        ```
     """
 
     @staticmethod
@@ -124,22 +142,4 @@ class Producer:
             key=key,
             data=self.serializer(data),
             metadata=self.serializer(metadata),
-        )
-
-
-if __name__ == '__main__':
-    producer = Producer(
-        'turtle',
-        connection=connection,
-    )
-
-    data = {'hello': 'world\u0003\\u0000\u0000', 'simple_kafka': True}
-    metadata = {'encoding': 'utf-8'}
-    for i in range(5):
-        data['index'] = i
-        producer.send(
-            topic='testing',
-            key=f'turtle{i}',
-            metadata=metadata,
-            data=data,
         )
