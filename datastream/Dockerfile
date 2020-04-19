@@ -7,10 +7,11 @@ RUN apt-get install -y \
 # libpq-dev \ postgres libraries
 # gcc \ help installing psycopg 
 
-WORKDIR /usr/src/app
+WORKDIR /usr/local/src/
 
-ENV PYTHONPATH '/src/local/app'
-
+ENV PYTHONPATH '/usr/local/src/'
 RUN pip install --no-cache-dir psycopg2
+
+COPY . .
 
 CMD ["python"]

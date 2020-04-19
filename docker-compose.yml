@@ -15,10 +15,10 @@ services:
       POSTGRES_USER: datastreamuser
       POSTGRES_DB: datastream
 
-  python:
+  datastream:
     build: datastream/.
     volumes:
-      - ./:/usr/src/app
+      - ./:/usr/local/src/
     environment:
       POSTGRES_PASSWORD: A22469000YABUTDONTREALLYUSETHISPASSWORD
       POSTGRES_USER: datastreamuser
