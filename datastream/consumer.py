@@ -7,8 +7,14 @@ from typing import (
     Dict,
 )
 
-from datastream import database
-from datastream.database import cursor_type, connection_type
+from datastream import (
+    database,
+    config,
+)
+from datastream.database import (
+    cursor_type,
+    connection_type,
+)
 
 
 __all__ = ['Consumer']
@@ -38,7 +44,7 @@ def execute_fetch_records(
         , r.timestamp
         , r.metadata
         , r.data
-    FROM datastream.record r
+    FROM {config.DATASTREAM_SCHEMA}.record r
     WHERE r.record_id IN ({record_ids_in})
     """
     logger.debug(sql)
@@ -63,7 +69,7 @@ def execute_create_consumer_jobs(
 ) -> List[int]:
     """ Create consumer start jobs without commit. """
     sql = f"""
-    INSERT INTO datastream.consumer_job
+    INSERT INTO {config.DATASTREAM_SCHEMA}.consumer_job
     (consumer_group_name, record_id, job_started_at)
     (
         SELECT
@@ -71,8 +77,8 @@ def execute_create_consumer_jobs(
             , r.record_id
             , %(job_start_time)s
         FROM
-            datastream.record r
-            LEFT JOIN datastream.consumer_job cj ON
+            {config.DATASTREAM_SCHEMA}.record r
+            LEFT JOIN {config.DATASTREAM_SCHEMA}.consumer_job cj ON
                 r.record_id = cj.record_id
                 AND consumer_group_name = %(consumer_group_name)s
         WHERE
@@ -155,7 +161,7 @@ def poll_records(
 
     with connection:
         with connection.cursor() as cursor:
-            cursor.execute('LOCK TABLE datastream.consumer_job IN ACCESS EXCLUSIVE MODE')  # noqa
+            cursor.execute(f"LOCK TABLE {config.DATASTREAM_SCHEMA}.consumer_job IN ACCESS EXCLUSIVE MODE")  # noqa
             cursor.execute(f"SET LOCAL lock_timeout = '{lock_timeout_s}s'")
             record_ids = execute_create_consumer_jobs(
                 cursor=cursor,
@@ -200,8 +206,8 @@ def poll_consumer_job_in_progress(
         , consumer_job_id
         , job_started_at
     FROM 
-        datastream.consumer_job cj
-        JOIN datastream.record r ON r.record_id = cj.record_id
+        {config.DATASTREAM_SCHEMA}.consumer_job cj
+        JOIN {config.DATASTREAM_SCHEMA}.record r ON r.record_id = cj.record_id
     WHERE
         r.topic = %(topic)s
         AND cj.consumer_group_name = %(consumer_group_name)s
@@ -239,7 +245,7 @@ def execute_commit_records(
     job_completed_at = job_completed_at or datetime.utcnow()
     record_ids_in = ', '.join(map(str, map(int, record_ids)))
     sql = f"""
-    UPDATE datastream.consumer_job
+    UPDATE {config.DATASTREAM_SCHEMA}.consumer_job
     SET
         job_completed_at = %(job_completed_at)s
     WHERE
@@ -312,19 +318,13 @@ class Consumer:
     of this consumer.
 
     Parameters:
-
         topic (str): Topic to read from.
-
         consumer_group_name (str): Consumer group to track processing records
-
         max_poll_records (int): Number of records to fetch per poll.
-
         max_poll_interval_ms (int): Number of ms to wait between each fetch
             for more records.
-
         enable_auto_commit (bool): Autocommit after every 
             auto_commit_interval_size records you yield from iter(consumer).
-
         auto_commit_interval_size (int): Number of records to yield before
             doing a commit of the records. 
 
@@ -334,7 +334,6 @@ class Consumer:
 
             If auto_commit_interval_size > max_poll_records then it will
             iterate until max_poll_records or no more records found. 
-
         connection (psycopg2.extensions.connection): storage backend. This
             connection is used per process/thread. To make process/thread safe
             all consumers in a single process/thread should share a single

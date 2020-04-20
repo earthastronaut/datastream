@@ -7,20 +7,25 @@ from typing import (
     Dict,
 )
 
-from datastream import database
-from datastream.database import cursor_type, connection_type
+from datastream import (
+    database,
+    config,
+)
+from datastream.database import (
+    cursor_type,
+    connection_type,
+)
 
 
-__all__ = [
-    'Producer'
-]
+__all__ = ['Producer']
 
-# logging.basicConfig(level='DEBUG')
-# logging.getLogger('ipython').setLevel('CRITICAL')
+
 logger = logging.getLogger(__name__)
 
 
-# connection = database.create_connection()
+# ############################################################################ #
+# Insert record
+# ############################################################################ #
 
 
 def execute_insert_record(
@@ -32,8 +37,8 @@ def execute_insert_record(
     data: bytes,
 ) -> int:
     """ Does a record insert without commit """
-    sql = """
-    INSERT INTO datastream.record
+    sql = f"""
+    INSERT INTO {config.DATASTREAM_SCHEMA}.record
     (topic, key, producer_name, metadata, data) 
     VALUES (%(topic)s, %(key)s, %(producer_name)s, %(metadata)s, %(data)s)
     RETURNING record_id
@@ -92,6 +97,11 @@ def send_record(
                 data=data,
                 metadata=metadata,
             )
+
+
+# ############################################################################ #
+# Producer Class
+# ############################################################################ #
 
 
 class Producer:

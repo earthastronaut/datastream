@@ -1,5 +1,6 @@
 from . import (
     database,
+    config,
     consumer,
     producer,
 )
